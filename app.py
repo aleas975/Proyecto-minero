@@ -4,6 +4,9 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Control de Gestión: Forecast vs Budget", layout="wide")
 
+# =====================================================================
+# SECCIÓN 1: CONFIGURACIÓN INICIAL Y CARGA DE DATOS
+# =====================================================================
 st.title("📊 Control de Gestión Minera: Forecast vs Budget")
 st.markdown("Plataforma corporativa para el análisis y visualización de desviaciones presupuestarias.")
 
@@ -27,25 +30,21 @@ if uploaded_file:
         df_forecast.columns = df_forecast.columns.str.strip()
         df_budget.columns = df_budget.columns.str.strip()
 
+        # Estandarización de nomenclaturas de áreas operativas
         for df in [df_forecast, df_budget]:
             if 'Gerencia' in df.columns:
                 df['Gerencia'] = df['Gerencia'].astype(str).str.strip().replace(
                     {'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'})
 
+        # =====================================================================
+        # SECCIÓN 2: PROCESAMIENTO INTELIGENTE Y MAPEO DE MESES
+        # =====================================================================
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-        meses_f_map = {}
-        for m in abrev_meses:
-            match = [c for c in df_forecast.columns if c.startswith(m)]
-            if match:
-                meses_f_map[m] = match[0]
-
-        meses_b_map = {}
-        for m in abrev_meses:
-            match = [c for c in df_budget.columns if c.startswith(m)]
-            if match:
-                meses_b_map[m] = match[0]
-
+        meses_f_map = {m: [c for c in df_forecast.columns if c.startswith(m)][0] for m in abrev_meses if
+                       [c for c in df_forecast.columns if c.startswith(m)]}
+        meses_b_map = {m: [c for c in df_budget.columns if c.startswith(m)][0] for m in abrev_meses if
+                       [c for c in df_budget.columns if c.startswith(m)]}
         meses_validos = [m for m in abrev_meses if m in meses_f_map and m in meses_b_map]
 
         if not meses_validos:
@@ -54,26 +53,16 @@ if uploaded_file:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
 
-            col_fy_budget = None
-            if columnas_meses_b:
-                nombre_mes_ejemplo = columnas_meses_b[0]
-                partes = nombre_mes_ejemplo.split('-')
-                if len(partes) > 1:
-                    anio = partes[-1].strip()
-                    posible_col = f"FY{anio}"
-                    if posible_col in df_budget.columns:
-                        col_fy_budget = posible_col
-
+            # Identificación dinámica de la columna de presupuesto anual (FY)
+            col_fy_budget = next((col for col in df_budget.columns if
+                                  col.startswith('FY') and (columnas_meses_b[0].split('-')[-1].strip() in col)), None)
             if not col_fy_budget:
-                cols_fy = [c for c in df_budget.columns if c.startswith('FY')]
-                if cols_fy:
-                    col_fy_budget = cols_fy[0]
+                col_fy_budget = next((c for c in df_budget.columns if c.startswith('FY')), None)
 
             if 'CC' in df_forecast.columns and 'CC' in df_budget.columns:
                 columnas_dimensiones = ['CC', 'Classif', 'Gerencia', 'Desc Item']
                 dims_f = [c for c in columnas_dimensiones if c in df_forecast.columns]
 
-                # CORRECCIÓN: Se copia la lista sin incluir 'CC' para evitar el error "cannot insert CC"
                 cols_b_extra = columnas_meses_b.copy()
                 if col_fy_budget and col_fy_budget in df_budget.columns:
                     cols_b_extra.append(col_fy_budget)
@@ -102,6 +91,9 @@ if uploaded_file:
                     if filtro_gerencia != "Todas":
                         df_merged = df_merged[df_merged['Gerencia'] == filtro_gerencia]
 
+                # =====================================================================
+                # SECCIÓN 3: CÁLCULOS GLOBALES (FULL YEAR)
+                # =====================================================================
                 valores_forecast_full = [df_merged[meses_f_map[m]].sum() for m in meses_validos]
                 valores_budget_full_list = [df_merged[f"{m}_Bud"].sum() for m in meses_validos]
 
@@ -117,6 +109,9 @@ if uploaded_file:
                 tab_anual, tab_temporal = st.tabs(
                     ["📅 Análisis Año Completo (Full Year)", "⏳ Análisis Temporal Interactivo"])
 
+                # =====================================================================
+                # SECCIÓN 4: INTERFAZ - PESTAÑA ANUAL (FULL YEAR)
+                # =====================================================================
                 with tab_anual:
                     st.markdown(f"### 🎯 Desempeño Financiero Anual Consolidado")
                     col1, col2, col3 = st.columns(3)
@@ -145,10 +140,14 @@ if uploaded_file:
                         title="Distribución de Volúmenes y Variación del Periodo",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                         yaxis=dict(title="Montos Absolutos ($)", showgrid=True),
-                        yaxis2=dict(title="Varianza Neta ($)", overlaying="y", side="right", showgrid=False)
+                        yaxis2=dict(title="Varianza Neta ($)", overlaying="y", side="right", showgrid=False),
+                        height=500
                     )
                     st.plotly_chart(fig_comb, use_container_width=True)
 
+                # =====================================================================
+                # SECCIÓN 5: INTERFAZ - PESTAÑA TEMPORAL (HASTA HOY)
+                # =====================================================================
                 with tab_temporal:
                     st.markdown("### ⏳ Simulación Temporal Acumulada (YTD Dinámico)")
 
@@ -175,40 +174,26 @@ if uploaded_file:
 
                     st.divider()
 
-                    st.subheader(f"📊 Desglose Visual Filtrado (Ene a {mes_corte})")
-                    gt_col1, gt_col2 = st.columns([2, 1])
+                    # Gráfico Cascada a ancho completo para máxima legibilidad
+                    st.subheader(f"📊 Impacto Acumulado de Variaciones (Ene a {mes_corte})")
 
-                    with gt_col1:
-                        fig_comb_hoy = go.Figure()
-                        fig_comb_hoy.add_trace(
-                            go.Bar(x=meses_hasta_hoy, y=valores_budget_hoy, name="Budget", marker_color="#1f77b4",
-                                   opacity=0.65))
-                        fig_comb_hoy.add_trace(go.Bar(x=meses_hasta_hoy, y=valores_forecast_hoy, name="Forecast 5+7",
-                                                      marker_color="#ff7f0e", opacity=0.85))
-                        fig_comb_hoy.add_trace(
-                            go.Scatter(x=meses_hasta_hoy, y=varianzas_mensuales_hoy, name="Varianza (F - B)",
-                                       mode="lines+markers",
-                                       line=dict(color="#d62728", width=3), yaxis="y2"))
-                        fig_comb_hoy.update_layout(
-                            barmode="group", hovermode="x unified",
-                            title=f"Desviación de Líneas de Base hasta {mes_corte}",
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                            yaxis=dict(title="Montos Absolutos ($)"),
-                            yaxis2=dict(title="Varianza Neta ($)", overlaying="y", side="right", showgrid=False)
-                        )
-                        st.plotly_chart(fig_comb_hoy, use_container_width=True)
+                    fig_water_hoy = go.Figure(go.Waterfall(
+                        name="Variación Acumulada", orientation="v", x=meses_hasta_hoy, textposition="outside",
+                        text=[f"${v / 1_000_000:.2f}M" for v in varianzas_mensuales_hoy], y=varianzas_mensuales_hoy,
+                        connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5)),
+                        decreasing=dict(marker=dict(color="#2ca02c")), increasing=dict(marker=dict(color="#d62728"))
+                    ))
+                    fig_water_hoy.update_layout(
+                        title=f"Gráfico de Cascada Acumulado ({mes_corte})",
+                        showlegend=False,
+                        height=550,  # Se otorga más espacio vertical
+                        margin=dict(t=50, b=50)
+                    )
+                    st.plotly_chart(fig_water_hoy, use_container_width=True)
 
-                    with gt_col2:
-                        fig_water_hoy = go.Figure(go.Waterfall(
-                            name="Variación Acumulada", orientation="v", x=meses_hasta_hoy, textposition="outside",
-                            text=[f"${v / 1_000_000:.2f}M" for v in varianzas_mensuales_hoy], y=varianzas_mensuales_hoy,
-                            connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5)),
-                            decreasing=dict(marker=dict(color="#2ca02c")), increasing=dict(marker=dict(color="#d62728"))
-                        ))
-                        fig_water_hoy.update_layout(title=f"Gráfico de Cascada Acumulado ({mes_corte})",
-                                                    showlegend=False)
-                        st.plotly_chart(fig_water_hoy, use_container_width=True)
+                    st.divider()
 
+                    # Curvas individuales separadas y más amplias
                     st.markdown("##### Comportamiento de Tendencias Individuales")
                     col_sep1, col_sep2 = st.columns(2)
                     with col_sep1:
@@ -216,16 +201,19 @@ if uploaded_file:
                             go.Scatter(x=meses_hasta_hoy, y=valores_forecast_hoy, mode="lines+markers", name="Forecast",
                                        line=dict(color="#ff7f0e", width=3)))
                         fig_f_hoy.update_layout(title="Curva de Ejecución Pura: Forecast", xaxis_title="Meses",
-                                                yaxis_title="Monto ($)")
+                                                yaxis_title="Monto ($)", height=450)
                         st.plotly_chart(fig_f_hoy, use_container_width=True)
                     with col_sep2:
                         fig_b_hoy = go.Figure(
                             go.Scatter(x=meses_hasta_hoy, y=valores_budget_hoy, mode="lines+markers", name="Budget",
                                        line=dict(color="#1f77b4", width=3)))
                         fig_b_hoy.update_layout(title="Curva de Ejecución Pura: Budget", xaxis_title="Meses",
-                                                yaxis_title="Monto ($)")
+                                                yaxis_title="Monto ($)", height=450)
                         st.plotly_chart(fig_b_hoy, use_container_width=True)
 
+                # =====================================================================
+                # SECCIÓN 6: MATRIZ DE DATOS (TABLA DETALLADA)
+                # =====================================================================
                 st.subheader("📋 Matriz Detallada por Centro de Costo")
                 df_tabla = df_merged.copy()
                 df_tabla['Varianza Total'] = 0.0
