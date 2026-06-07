@@ -1,107 +1,145 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 
-# Configuración de la página
-st.set_page_config(page_title="Dashboard Forecast vs Budget", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Control de Gestión: Forecast vs Budget", layout="wide")
 
-st.title("📊 Visualización Avanzada: Control de Gestión y Presupuesto")
-st.markdown("Plataforma interactiva para el seguimiento del Forecast 5+7 frente a los Budgets consolidados.")
+st.title("📊 Control de Gestión Minera: Forecast 5+7 vs Budget")
+st.markdown("Análisis granular de variaciones presupuestarias indexado por Centro de Costo (CC).")
 
-# Panel lateral para cargar datos
+# 1. Carga del archivo Excel
 with st.sidebar:
-    st.header("📂 Carga de Datos")
-    uploaded_file = st.file_uploader("Sube tu archivo (Excel o CSV)", type=["csv", "xlsx"])
+    st.header("📂 Ingesta de Datos")
+    uploaded_file = st.file_uploader("Sube el archivo Excel del Proyecto", type=["xlsx"])
 
 if uploaded_file:
-    # 1. Lectura robusta del archivo
     try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, encoding='latin-1')
-        else:
-            df = pd.read_excel(uploaded_file)
+        # Leer estructura completa de hojas sin cargar datos en memoria aún
+        xls = pd.ExcelFile(uploaded_file)
+        hojas_disponibles = xls.sheet_names
 
-        # Limpieza y estandarización de nomenclaturas de negocio
-        df = df.replace({'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'}, regex=True)
+        st.sidebar.markdown("### 🗺️ Mapeo de Estructura")
+        hoja_f = st.sidebar.selectbox("Selecciona la hoja de FORECAST", hojas_disponibles, index=0)
+        hoja_b = st.sidebar.selectbox("Selecciona la hoja de BUDGET", hojas_disponibles,
+                                      index=min(1, len(hojas_disponibles) - 1))
 
-        st.sidebar.success("Base de datos procesada correctamente.")
+        # Cargar hojas seleccionadas
+        df_forecast = pd.read_excel(uploaded_file, sheet_name=hoja_f)
+        df_budget = pd.read_excel(uploaded_file, sheet_name=hoja_b)
 
-        # 2. Filtros Interactivos
-        st.sidebar.markdown("### ⚙️ Filtros")
+        # Limpieza de nombres de columnas (eliminar espacios ocultos)
+        df_forecast.columns = df_forecast.columns.str.strip()
+        df_budget.columns = df_budget.columns.str.strip()
 
-        # Buscar columnas categóricas comunes en tus archivos (ej. Classif, Gerencia, VP)
-        col_categoria = [col for col in ['Classif', 'Categoría', 'Item', 'Desc Item'] if col in df.columns]
+        # Estandarización de nomenclaturas de portales (regla de negocio invisible)
+        for df in [df_forecast, df_budget]:
+            if 'Gerencia' in df.columns:
+                df['Gerencia'] = df['Gerencia'].astype(str).str.strip().replace(
+                    {'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'})
 
-        if col_categoria:
-            categoria_seleccionada = st.sidebar.selectbox("Seleccionar Categoría / Clasificación",
-                                                          ["Todas"] + list(df[col_categoria[0]].unique()))
-            if categoria_seleccionada != "Todas":
-                df = df[df[col_categoria[0]] == categoria_seleccionada]
+        # 2. Definición de dimensiones temporales (Meses del periodo)
+        meses = ['Jan-26', 'Feb-26', 'Mar-26', 'Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26', 'Sep-26', 'Oct-26',
+                 'Nov-26', 'Dec-26']
 
-        # 3. Cálculo de KPIs principales (Buscando columnas clave de tus Excels)
-        col_forecast = [c for c in df.columns if 'Forecast FY' in c or 'Suma de Forecast' in c]
-        col_budget = [c for c in df.columns if 'Budget FY' in c or 'Suma de Budget' in c]
-        col_var = [c for c in df.columns if 'Var' in c or 'Varianza' in c]
+        # Validar presencia de columnas críticas
+        if 'CC' in df_forecast.columns and 'CC' in df_budget.columns:
 
-        if col_forecast and col_budget:
-            total_forecast = df[col_forecast[0]].sum()
-            total_budget = df[col_budget[0]].sum()
-            total_var = df[col_var[0]].sum() if col_var else (total_forecast - total_budget)
+            # 3. Preparación de DataFrames para cruce mensual
+            # Agrupar por CC para asegurar consolidación limpia antes del merge
+            columnas_dimensiones = ['CC', 'Classif', 'Gerencia', 'Desc Item']
+            dims_f = [c for c in columnas_dimensiones if c in df_forecast.columns]
+            dims_b = [c for c in columnas_dimensiones if c in df_budget.columns]
 
-            st.markdown("### 📈 KPIs Globales del Periodo")
+            df_f_melt = df_forecast.groupby(dims_f)[meses].sum().reset_index()
+            df_b_melt = df_budget.groupby(['CC'])[meses].sum().reset_index()
+
+            # Renombrar meses en budget para evitar colisiones
+            meses_b_mapping = {m: f"{m}_Bud" for m in meses}
+            df_b_melt = df_b_melt.rename(columns=meses_b_mapping)
+
+            # Cruce relacional por llave única (CC)
+            df_merged = pd.merge(df_f_melt, df_b_melt, on='CC', how='inner')
+
+            # 4. Panel de Filtros en Barra Lateral
+            st.sidebar.markdown("### ⚙️ Filtros Operacionales")
+
+            filtro_classif = "Todas"
+            if 'Classif' in df_merged.columns:
+                filtro_classif = st.sidebar.selectbox("Clasificación de Costo (Classif)",
+                                                      ["Todas"] + list(df_merged['Classif'].dropna().unique()))
+                if filtro_classif != "Todas":
+                    df_merged = df_merged[df_merged['Classif'] == filtro_classif]
+
+            filtro_gerencia = "Todas"
+            if 'Gerencia' in df_merged.columns:
+                filtro_gerencia = st.sidebar.selectbox("Gerencia",
+                                                       ["Todas"] + list(df_merged['Gerencia'].dropna().unique()))
+                if filtro_gerencia != "Todas":
+                    df_merged = df_merged[df_merged['Gerencia'] == filtro_gerencia]
+
+            # 5. Cómputo de Series Mensuales Agregadas
+            valores_forecast = [df_merged[m].sum() for m in meses]
+            valores_budget = [df_merged[f"{m}_Bud"].sum() for m in meses]
+            varianzas_mensuales = [f - b for f, b in zip(valores_forecast, valores_budget)]
+
+            # Acumulados
+            sum_forecast_fy = sum(valores_forecast)
+            sum_budget_fy = sum(valores_budget)
+            varianza_total = sum_forecast_fy - sum_budget_fy
+
+            # 6. Despliegue de Indicadores Financieros (KPIs)
+            st.markdown(f"### 🎯 Desempeño Financiero Comercial — Vista: {filtro_classif} / Gerencia: {filtro_gerencia}")
             kpi1, kpi2, kpi3 = st.columns(3)
-            kpi1.metric("Proyección (Forecast)", f"$ {total_forecast:,.0f}")
-            kpi2.metric("Presupuesto (Budget)", f"$ {total_budget:,.0f}")
-            kpi3.metric("Varianza (Desviación)", f"$ {total_var:,.0f}", delta_color="inverse")
+            kpi1.metric("Forecast Anual Proyectado (5+7)", f"$ {sum_forecast_fy:,.2f}")
+            kpi2.metric("Budget Original Aprobado", f"$ {sum_budget_fy:,.2f}")
+            kpi3.metric("Varianza Neta del Periodo", f"$ {varianza_total:,.2f}", delta_color="inverse")
+
             st.divider()
 
-        # 4. Visualización 1: Comparativa Categorías (Barras)
-        if col_categoria and col_forecast and col_budget:
-            st.subheader("Análisis de Varianza por Ítem / Categoría")
+            # 7. Visualización Interactiva Multi-Eje (Plotly)
+            st.subheader("📈 Curva de Desviación Presupuestaria y Tendencia Mensual")
 
-            # Agrupar datos para el gráfico
-            df_grouped = df.groupby(col_categoria[0])[[col_forecast[0], col_budget[0]]].sum().reset_index()
+            fig = go.Figure()
+            # Columnas barras de presupuesto original
+            fig.add_trace(go.Bar(x=meses, y=valores_budget, name="Budget", marker_color="#1f77b4", opacity=0.65))
+            # Columnas barras de forecast proyectado
+            fig.add_trace(
+                go.Bar(x=meses, y=valores_forecast, name="Forecast 5+7", marker_color="#ff7f0e", opacity=0.85))
+            # Línea de comportamiento de varianza mensual
+            fig.add_trace(
+                go.Scatter(x=meses, y=varianzas_mensuales, name="Varianza Mensual (F - B)", mode="lines+markers",
+                           line=dict(color="#d62728", width=3, dash="solid"), yaxis="y2"))
 
-            fig_bar = go.Figure()
-            fig_bar.add_trace(
-                go.Bar(x=df_grouped[col_categoria[0]], y=df_grouped[col_budget[0]], name='Budget Aprobado',
-                       marker_color='#1f77b4'))
-            fig_bar.add_trace(
-                go.Bar(x=df_grouped[col_categoria[0]], y=df_grouped[col_forecast[0]], name='Forecast Proyectado',
-                       marker_color='#ff7f0e'))
+            fig.update_layout(
+                barmode="group",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                yaxis=dict(title="Montos Financieros ($)"),
+                yaxis2=dict(title="Varianza Neta por Mes ($)", overlaying="y", side="right", showgrid=False),
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            fig_bar.update_layout(barmode='group', xaxis_title="Categoría", yaxis_title="Monto ($)")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            # 8. Desglose Detallado por Ítem de Gasto
+            st.subheader("📋 Matriz de Desviación por Centro de Costo")
+            df_tabla = df_merged.copy()
+            # Calcular varianza agregada por fila para visualización en tabla
+            df_tabla['Varianza Total'] = 0.0
+            for m in meses:
+                df_tabla['Varianza Total'] += (df_tabla[m] - df_tabla[f"{m}_Bud"])
 
-        # 5. Visualización 2: Tendencia Mensual (Líneas)
-        # Identificar columnas de meses (Jan-26, Feb-26, etc.)
-        meses_cols = [c for c in df.columns if any(
-            mes in c for mes in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])]
+            columnas_visibles = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if c in df_tabla.columns] + [
+                'Varianza Total']
+            st.dataframe(df_tabla[columnas_visibles].sort_values(by='Varianza Total', ascending=True),
+                         use_container_width=True)
 
-        if meses_cols:
-            st.subheader("Curva de Ejecución Mensual (Forecast 5+7)")
-            df_meses = df[meses_cols].sum().reset_index()
-            df_meses.columns = ['Mes', 'Gasto Proyectado']
-
-            fig_line = px.line(df_meses, x='Mes', y='Gasto Proyectado', markers=True,
-                               title="Distribución del Gasto a lo largo del año")
-
-            # Añadir una línea plana promedio del budget si existe
-            if col_budget:
-                promedio_mensual = total_budget / 12
-                fig_line.add_hline(y=promedio_mensual, line_dash="dot", annotation_text="Budget Promedio Mensual",
-                                   annotation_position="bottom right", line_color="red")
-
-            fig_line.update_traces(line=dict(width=3))
-            st.plotly_chart(fig_line, use_container_width=True)
-
-        # 6. Tabla de datos sin procesar
-        st.subheader("Datos Detallados")
-        st.dataframe(df, use_container_width=True)
+        else:
+            st.error(
+                "Error estructural: No se encontró la columna clave 'CC' en ambas hojas para realizar la unión relacional.")
 
     except Exception as e:
-        st.error(f"Error procesando el archivo. Asegúrate de que el formato coincida. Detalle técnico: {e}")
-
+        st.error(f"Error crítico de procesamiento: {str(e)}")
 else:
-    st.info("👈 Por favor, carga un archivo Excel o CSV desde el panel lateral para iniciar el análisis visual.")
+    st.info(
+        "👈 Esperando carga de la planilla de control de gestión minera (.xlsx) para inicializar el pipeline analítico.")
