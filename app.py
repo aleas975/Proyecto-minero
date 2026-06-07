@@ -218,32 +218,99 @@ if uploaded_file:
                                                 yaxis_title="Monto ($)", height=450)
                         st.plotly_chart(fig_b_hoy, use_container_width=True)
 
-                # =====================================================================
-                # SECCIÓN 6: INTERFAZ - PESTAÑA MULTI-PRESUPUESTO (NUEVA ANÁLISIS)
-                # =====================================================================
-                with tab_multi_presupuesto:
-                    st.markdown("### 📈 Análisis de Evolución Presupuestaria Horizonte Plurianual")
-                    st.markdown(
-                        "Revisión de las proyecciones de inversión base asignadas a lo largo de los periodos fiscales indexados.")
+                        # =====================================================================
+                        # SECCIÓN 6: INTERFAZ - PESTAÑA MULTI-PRESUPUESTO (NUEVA ANÁLISIS)
+                        # =====================================================================
+                        with tab_multi_presupuesto:
+                            st.markdown("### 📈 Análisis de Evolución Presupuestaria Horizonte Plurianual")
+                            st.markdown(
+                                "Revisión de las proyecciones de inversión y puente de variaciones interanuales por categoría.")
 
-                    valores_multi_fy = [df_merged[c].sum() / 1_000_000 for c in cols_fy_todas]
+                            # 1. Gráfico de tendencias histórico (Línea)
+                            valores_multi_fy = [df_merged[c].sum() / 1_000_000 for c in cols_fy_todas]
 
-                    fig_trend_fy = go.Figure()
-                    fig_trend_fy.add_trace(go.Scatter(
-                        x=cols_fy_todas, y=valores_multi_fy,
-                        mode="lines+markers+text",
-                        text=[f"${v:,.2f}M" for v in valores_multi_fy],
-                        textposition="top center",
-                        line=dict(color="#9467bd", width=4),
-                        marker=dict(size=10, symbol="diamond")
-                    ))
-                    fig_trend_fy.update_layout(
-                        title="Tendencia de Presupuestos Consolidados por Año de Ejercicio (Horizonte Completo)",
-                        xaxis_title="Periodos Presupuestarios (Financial Years)",
-                        yaxis_title="Monto Total Asignado (M$)",
-                        height=550
-                    )
-                    st.plotly_chart(fig_trend_fy, use_container_width=True)
+                            fig_trend_fy = go.Figure()
+                            fig_trend_fy.add_trace(go.Scatter(
+                                x=cols_fy_todas, y=valores_multi_fy,
+                                mode="lines+markers+text",
+                                text=[f"${v:,.2f}M" for v in valores_multi_fy],
+                                textposition="top center",
+                                line=dict(color="#9467bd", width=4),
+                                marker=dict(size=10, symbol="diamond")
+                            ))
+                            fig_trend_fy.update_layout(
+                                title="Tendencia de Presupuestos Consolidados por Año de Ejercicio",
+                                xaxis_title="Periodos Presupuestarios",
+                                yaxis_title="Monto Total Asignado (M$)",
+                                height=400
+                            )
+                            st.plotly_chart(fig_trend_fy, use_container_width=True)
+
+                            st.divider()
+
+                            # 2. NUEVO: Gráfico de Cascada Interanual (Puente Presupuestario)
+                            st.subheader("🌊 Variación Detallada entre Presupuestos (Puente Interanual)")
+
+                            if len(cols_fy_todas) >= 2:
+                                # Selectores de años a comparar
+                                col_sel1, col_sel2 = st.columns(2)
+                                fy_base = col_sel1.selectbox("Seleccione Presupuesto Base (Año Inicial):",
+                                                             cols_fy_todas, index=0)
+                                fy_target = col_sel2.selectbox("Seleccione Presupuesto Destino (Año Final):",
+                                                               cols_fy_todas, index=1)
+
+                                # Extracción de totales
+                                total_base = df_merged[fy_base].sum() / 1_000_000
+                                total_target = df_merged[fy_target].sum() / 1_000_000
+
+                                # Agrupación de la varianza por Clasificación de Costo (Classif)
+                                df_puente = df_merged.groupby('Classif')[[fy_base, fy_target]].sum().reset_index()
+                                df_puente['Delta'] = (df_puente[fy_target] - df_puente[fy_base]) / 1_000_000
+
+                                # Ordenar por impacto para una visualización de cascada más limpia
+                                df_puente = df_puente.sort_values(by='Delta', ascending=False)
+
+                                categorias_puente = df_puente['Classif'].tolist()
+                                deltas_puente = df_puente['Delta'].tolist()
+
+                                # Vectores de construcción estructural para Plotly Waterfall
+                                x_water = [fy_base] + categorias_puente + [fy_target]
+                                y_water = [total_base] + deltas_puente + [
+                                    0]  # 0 es el valor técnico de Plotly para cerrar la columna "total"
+                                measure_water = ["absolute"] + ["relative"] * len(categorias_puente) + ["total"]
+
+                                # Formateo de etiquetas de texto con signos explícitos
+                                text_water = [f"${total_base:,.2f}M"] + [f"${d:,.2f}M" if d < 0 else f"+${d:,.2f}M" for
+                                                                         d in deltas_puente] + [
+                                                 f"${total_target:,.2f}M"]
+
+                                fig_bridge = go.Figure(go.Waterfall(
+                                    name="Puente Presupuestario",
+                                    orientation="v",
+                                    measure=measure_water,
+                                    x=x_water,
+                                    textposition="outside",
+                                    text=text_water,
+                                    y=y_water,
+                                    connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5, dash="dot")),
+                                    decreasing=dict(marker=dict(color="#2ca02c")),
+                                    # Verde: Reducción de presupuesto interanual
+                                    increasing=dict(marker=dict(color="#d62728")),
+                                    # Rojo: Aumento de presupuesto interanual
+                                    totals=dict(marker=dict(color="#1f77b4"))  # Azul: Barras base y destino
+                                ))
+
+                                fig_bridge.update_layout(
+                                    title=f"Explicación de Variaciones por Categoría: {fy_base} → {fy_target}",
+                                    showlegend=False,
+                                    height=550,
+                                    margin=dict(t=50, b=50),
+                                    yaxis=dict(title="Monto (M$)")
+                                )
+                                st.plotly_chart(fig_bridge, use_container_width=True)
+                            else:
+                                st.info(
+                                    "Se requiere información de al menos dos años presupuestarios (ej. FY24 y FY25) para generar el puente interanual.")
 
                 # =====================================================================
                 # SECCIÓN 7: MATRIZ DE DATOS (TABLA DETALLADA)
