@@ -17,7 +17,12 @@ uploaded_file = st.file_uploader("Cargar consolidado de datos (CSV/Excel)", type
 
 if uploaded_file is not None:
     # Lógica asumiendo que subes el CSV de la tabla de análisis
-    df = pd.read_csv(uploaded_file)
+    # Detectar automáticamente si es CSV o Excel
+    if uploaded_file.name.endswith('.csv'):
+        # 'latin-1' evita que colapse con las tildes y las ñ en español
+        df = pd.read_csv(uploaded_file, encoding='latin-1')
+    elif uploaded_file.name.endswith('.xlsx'):
+        df = pd.read_excel(uploaded_file)
     
     st.subheader("Análisis de Varianza por Categoría")
     # Filtro por categoría (Labor, Fuel, Maintenance, etc.)
