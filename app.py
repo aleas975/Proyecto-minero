@@ -7,7 +7,6 @@ st.set_page_config(page_title="Control de Gestión: Forecast vs Budget", layout=
 st.title("📊 Control de Gestión Minera: Forecast vs Budget")
 st.markdown("Plataforma corporativa para el análisis y visualización de desviaciones presupuestarias.")
 
-# 1. Ingesta de Datos desde la barra lateral
 with st.sidebar:
     st.header("📂 Ingesta de Datos")
     uploaded_file = st.file_uploader("Sube el archivo Excel del Proyecto", type=["xlsx"])
@@ -18,7 +17,6 @@ if uploaded_file:
         hojas_disponibles = xls.sheet_names
 
         st.sidebar.markdown("### 🗺️ Mapeo de Estructura")
-        # Se corrige el orden de selección de las hojas solicitadas
         hoja_b = st.sidebar.selectbox("Selecciona la hoja de BUDGET", hojas_disponibles, index=0)
         hoja_f = st.sidebar.selectbox("Selecciona la hoja de FORECAST", hojas_disponibles,
                                       index=min(1, len(hojas_disponibles) - 1))
@@ -29,13 +27,11 @@ if uploaded_file:
         df_forecast.columns = df_forecast.columns.str.strip()
         df_budget.columns = df_budget.columns.str.strip()
 
-        # Estandarización de nomenclaturas de portales de reporte
         for df in [df_forecast, df_budget]:
             if 'Gerencia' in df.columns:
                 df['Gerencia'] = df['Gerencia'].astype(str).str.strip().replace(
                     {'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'})
 
-        # Detección dinámica de columnas de meses
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
         meses_f_map = {}
@@ -58,7 +54,6 @@ if uploaded_file:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
 
-            # IDENTIFICACIÓN INTELIGENTE DE LA COLUMNA DE PRESUPUESTO ANUAL (FY CORRETO)
             col_fy_budget = None
             if columnas_meses_b:
                 nombre_mes_ejemplo = columnas_meses_b[0]
@@ -78,20 +73,19 @@ if uploaded_file:
                 columnas_dimensiones = ['CC', 'Classif', 'Gerencia', 'Desc Item']
                 dims_f = [c for c in columnas_dimensiones if c in df_forecast.columns]
 
-                # Columnas de budget requeridas para consolidar
-                cols_b_extra = ['CC'] + columnas_meses_b
+                # CORRECCIÓN: Se copia la lista sin incluir 'CC' para evitar el error "cannot insert CC"
+                cols_b_extra = columnas_meses_b.copy()
                 if col_fy_budget and col_fy_budget in df_budget.columns:
                     cols_b_extra.append(col_fy_budget)
 
                 df_f_melt = df_forecast.groupby(dims_f)[columnas_meses_f].sum().reset_index()
-                df_b_melt = df_budget.groupby(['CC'])[cols_b_extra].sum().reset_index()
+                df_b_melt = df_budget.groupby('CC')[cols_b_extra].sum().reset_index()
 
                 meses_b_rename = {meses_b_map[m]: f"{m}_Bud" for m in meses_validos}
                 df_b_melt = df_b_melt.rename(columns=meses_b_rename)
 
                 df_merged = pd.merge(df_f_melt, df_b_melt, on='CC', how='inner')
 
-                # Filtros operacionales globales en barra lateral
                 st.sidebar.markdown("### ⚙️ Filtros Operacionales")
 
                 filtro_classif = "Todas"
@@ -108,11 +102,9 @@ if uploaded_file:
                     if filtro_gerencia != "Todas":
                         df_merged = df_merged[df_merged['Gerencia'] == filtro_gerencia]
 
-                # --- PROCESAMIENTO ESTRATÉGICO FULL YEAR ---
                 valores_forecast_full = [df_merged[meses_f_map[m]].sum() for m in meses_validos]
                 valores_budget_full_list = [df_merged[f"{m}_Bud"].sum() for m in meses_validos]
 
-                # Uso de columna real presupuestada si no hay filtros cruzados aplicados
                 if col_fy_budget and filtro_classif == "Todas" and filtro_gerencia == "Todas":
                     sum_budget_m = df_merged[col_fy_budget].sum() / 1_000_000
                 else:
@@ -122,11 +114,9 @@ if uploaded_file:
                 varianza_total_m = sum_forecast_m - sum_budget_m
                 varianzas_mensuales_full = [f - b for f, b in zip(valores_forecast_full, valores_budget_full_list)]
 
-                # --- ARQUITECTURA DE PESTAÑAS (TABS) ---
                 tab_anual, tab_temporal = st.tabs(
                     ["📅 Análisis Año Completo (Full Year)", "⏳ Análisis Temporal Interactivo"])
 
-                # PESTAÑA 1: VISTA ANUAL FIJA
                 with tab_anual:
                     st.markdown(f"### 🎯 Desempeño Financiero Anual Consolidado")
                     col1, col2, col3 = st.columns(3)
@@ -159,11 +149,9 @@ if uploaded_file:
                     )
                     st.plotly_chart(fig_comb, use_container_width=True)
 
-                # PESTAÑA 2: INTERACTIVIDAD TEMPORAL AISLADA
                 with tab_temporal:
                     st.markdown("### ⏳ Simulación Temporal Acumulada (YTD Dinámico)")
 
-                    # El selector y los gráficos que interactúan con él se encapsulan exclusivamente aquí
                     mes_corte = st.selectbox("Seleccionar mes de corte (Gasto acumulado hasta hoy):", meses_validos,
                                              index=len(meses_validos) - 1)
 
@@ -187,7 +175,6 @@ if uploaded_file:
 
                     st.divider()
 
-                    # Gráficos específicos de la sección temporal
                     st.subheader(f"📊 Desglose Visual Filtrado (Ene a {mes_corte})")
                     gt_col1, gt_col2 = st.columns([2, 1])
 
@@ -222,7 +209,6 @@ if uploaded_file:
                                                     showlegend=False)
                         st.plotly_chart(fig_water_hoy, use_container_width=True)
 
-                    # Gráficos puros por separado dentro del análisis temporal
                     st.markdown("##### Comportamiento de Tendencias Individuales")
                     col_sep1, col_sep2 = st.columns(2)
                     with col_sep1:
@@ -240,7 +226,6 @@ if uploaded_file:
                                                 yaxis_title="Monto ($)")
                         st.plotly_chart(fig_b_hoy, use_container_width=True)
 
-                # 4. Tabla detallada general por Centro de Costo (al final)
                 st.subheader("📋 Matriz Detallada por Centro de Costo")
                 df_tabla = df_merged.copy()
                 df_tabla['Varianza Total'] = 0.0
