@@ -1,69 +1,107 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
 import plotly.express as px
 import plotly.graph_objects as go
 
-# Configuración de página
-st.set_page_config(page_title="Visualizador Forecast 5+7 - Minería", layout="wide")
+# Configuración de la página
+st.set_page_config(page_title="Dashboard Forecast vs Budget", layout="wide", initial_sidebar_state="expanded")
 
-st.title("📊 Plataforma de Visualización: Forecast 5+7 vs Budget")
-st.markdown("Análisis predictivo no lineal para control de gestión en faena minera.")
+st.title("📊 Visualización Avanzada: Control de Gestión y Presupuesto")
+st.markdown("Plataforma interactiva para el seguimiento del Forecast 5+7 frente a los Budgets consolidados.")
 
-# Carga de datos (Simulando la lectura de tus hojas 'Forecast 5+7' y 'Tabla de análisis')
-uploaded_file = st.file_uploader("Cargar consolidado de datos (CSV/Excel)", type=["csv", "xlsx"])
+# Panel lateral para cargar datos
+with st.sidebar:
+    st.header("📂 Carga de Datos")
+    uploaded_file = st.file_uploader("Sube tu archivo (Excel o CSV)", type=["csv", "xlsx"])
 
-if uploaded_file is not None:
-    # Lógica asumiendo que subes el CSV de la tabla de análisis
-    # Detectar automáticamente si es CSV o Excel
-    if uploaded_file.name.endswith('.csv'):
-        # 'latin-1' evita que colapse con las tildes y las ñ en español
-        df = pd.read_csv(uploaded_file, encoding='latin-1')
-    elif uploaded_file.name.endswith('.xlsx'):
-        df = pd.read_excel(uploaded_file)
-    
-    st.subheader("Análisis de Varianza por Categoría")
-    # Filtro por categoría (Labor, Fuel, Maintenance, etc.)
-    if 'Categoría' in df.columns:
-        categoria = st.selectbox("Seleccione Categoría de Gasto", df['Categoría'].unique())
-        df_cat = df[df['Categoría'] == categoria]
-    else:
-        df_cat = df # Fallback si no está la columna
-        
-    # Visualización de KPIs
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Gasto Real (YTD Ene-May)", "$ 120.5M") # Valores de ejemplo a reemplazar con variables del df
-    col2.metric("Budget Aprobado (FY)", "$ 285.0M")
-    col3.metric("Varianza Proyectada", "$ -15.2M", delta_color="inverse")
+if uploaded_file:
+    # 1. Lectura robusta del archivo
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file, encoding='latin-1')
+        else:
+            df = pd.read_excel(uploaded_file)
 
-    st.markdown("---")
-    
-    # Simulación de Proyección No Lineal (Polinómica grado 2)
-    st.subheader("📈 Curva de Proyección No Lineal (Junio - Diciembre)")
-    
-    # Datos simulados basados en meses (1 al 12)
-    meses = np.array(range(1, 13)).reshape(-1, 1)
-    # Supongamos que estos son los gastos reales de Ene-May
-    gastos_reales = np.array([20, 22, 25, 24, 28]) 
-    
-    # Modelo polinómico
-    poly = PolynomialFeatures(degree=2)
-    meses_poly = poly.fit_transform(meses[:5])
-    modelo = LinearRegression().fit(meses_poly, gastos_reales)
-    
-    # Proyectando el año completo
-    meses_completos_poly = poly.transform(meses)
-    proyeccion = modelo.predict(meses_completos_poly)
-    
-    # Gráfico Plotly
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=['Ene', 'Feb', 'Mar', 'Abr', 'May'], y=gastos_reales, mode='lines+markers', name='YTD Real', line=dict(color='blue', width=3)))
-    fig.add_trace(go.Scatter(x=['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'], y=proyeccion, mode='lines', name='Forecast No Lineal', line=dict(color='orange', dash='dash')))
-    # Línea plana de Budget para comparación
-    fig.add_trace(go.Scatter(x=['Ene', 'Dic'], y=[24, 24], mode='lines', name='Budget Promedio', line=dict(color='red', width=2)))
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.info("El modelo polinómico captura la tendencia al alza del consumo, redistribuyendo la desviación presupuestaria en los meses de menor carga operativa (Q4).")
+        # Limpieza y estandarización de nomenclaturas de negocio
+        df = df.replace({'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'}, regex=True)
+
+        st.sidebar.success("Base de datos procesada correctamente.")
+
+        # 2. Filtros Interactivos
+        st.sidebar.markdown("### ⚙️ Filtros")
+
+        # Buscar columnas categóricas comunes en tus archivos (ej. Classif, Gerencia, VP)
+        col_categoria = [col for col in ['Classif', 'Categoría', 'Item', 'Desc Item'] if col in df.columns]
+
+        if col_categoria:
+            categoria_seleccionada = st.sidebar.selectbox("Seleccionar Categoría / Clasificación",
+                                                          ["Todas"] + list(df[col_categoria[0]].unique()))
+            if categoria_seleccionada != "Todas":
+                df = df[df[col_categoria[0]] == categoria_seleccionada]
+
+        # 3. Cálculo de KPIs principales (Buscando columnas clave de tus Excels)
+        col_forecast = [c for c in df.columns if 'Forecast FY' in c or 'Suma de Forecast' in c]
+        col_budget = [c for c in df.columns if 'Budget FY' in c or 'Suma de Budget' in c]
+        col_var = [c for c in df.columns if 'Var' in c or 'Varianza' in c]
+
+        if col_forecast and col_budget:
+            total_forecast = df[col_forecast[0]].sum()
+            total_budget = df[col_budget[0]].sum()
+            total_var = df[col_var[0]].sum() if col_var else (total_forecast - total_budget)
+
+            st.markdown("### 📈 KPIs Globales del Periodo")
+            kpi1, kpi2, kpi3 = st.columns(3)
+            kpi1.metric("Proyección (Forecast)", f"$ {total_forecast:,.0f}")
+            kpi2.metric("Presupuesto (Budget)", f"$ {total_budget:,.0f}")
+            kpi3.metric("Varianza (Desviación)", f"$ {total_var:,.0f}", delta_color="inverse")
+            st.divider()
+
+        # 4. Visualización 1: Comparativa Categorías (Barras)
+        if col_categoria and col_forecast and col_budget:
+            st.subheader("Análisis de Varianza por Ítem / Categoría")
+
+            # Agrupar datos para el gráfico
+            df_grouped = df.groupby(col_categoria[0])[[col_forecast[0], col_budget[0]]].sum().reset_index()
+
+            fig_bar = go.Figure()
+            fig_bar.add_trace(
+                go.Bar(x=df_grouped[col_categoria[0]], y=df_grouped[col_budget[0]], name='Budget Aprobado',
+                       marker_color='#1f77b4'))
+            fig_bar.add_trace(
+                go.Bar(x=df_grouped[col_categoria[0]], y=df_grouped[col_forecast[0]], name='Forecast Proyectado',
+                       marker_color='#ff7f0e'))
+
+            fig_bar.update_layout(barmode='group', xaxis_title="Categoría", yaxis_title="Monto ($)")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        # 5. Visualización 2: Tendencia Mensual (Líneas)
+        # Identificar columnas de meses (Jan-26, Feb-26, etc.)
+        meses_cols = [c for c in df.columns if any(
+            mes in c for mes in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])]
+
+        if meses_cols:
+            st.subheader("Curva de Ejecución Mensual (Forecast 5+7)")
+            df_meses = df[meses_cols].sum().reset_index()
+            df_meses.columns = ['Mes', 'Gasto Proyectado']
+
+            fig_line = px.line(df_meses, x='Mes', y='Gasto Proyectado', markers=True,
+                               title="Distribución del Gasto a lo largo del año")
+
+            # Añadir una línea plana promedio del budget si existe
+            if col_budget:
+                promedio_mensual = total_budget / 12
+                fig_line.add_hline(y=promedio_mensual, line_dash="dot", annotation_text="Budget Promedio Mensual",
+                                   annotation_position="bottom right", line_color="red")
+
+            fig_line.update_traces(line=dict(width=3))
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        # 6. Tabla de datos sin procesar
+        st.subheader("Datos Detallados")
+        st.dataframe(df, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error procesando el archivo. Asegúrate de que el formato coincida. Detalle técnico: {e}")
+
+else:
+    st.info("👈 Por favor, carga un archivo Excel o CSV desde el panel lateral para iniciar el análisis visual.")
