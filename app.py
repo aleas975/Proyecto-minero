@@ -2,6 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from io import BytesIO
+from datetime import datetime
+
+# Asegurar importaciones para exportación a Word
+try:
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+except ImportError:
+    st.error("Falta instalar python-docx. Ejecuta: pip install python-docx")
 
 st.set_page_config(page_title="Control de Gestión: Forecast vs Budget", layout="wide")
 
@@ -28,17 +38,34 @@ if uploaded_file:
         df_forecast = pd.read_excel(uploaded_file, sheet_name=hoja_f)
         df_budget = pd.read_excel(uploaded_file, sheet_name=hoja_b)
 
-        df_forecast.columns = df_forecast.columns.str.strip()
-        df_budget.columns = df_budget.columns.str.strip()
 
-        # Estandarización de nomenclaturas de áreas operativas
+        # 🛡️ NUEVO: FUNCIÓN ESCUDO CONTRA FECHAS OCULTAS Y ESPACIOS EN EXCEL
+        def estandarizar_columnas(df):
+            meses_map = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
+                         7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'}
+            nuevas_cols = []
+            for c in df.columns:
+                # Si Pandas lo leyó como una fecha (Ej: 2026-01-01 00:00:00)
+                if isinstance(c, (pd.Timestamp, datetime)):
+                    nuevas_cols.append(f"{meses_map[c.month]}-{str(c.year)[-2:]}")
+                else:
+                    # Si lo leyó como texto, eliminamos espacios y caracteres fantasmas
+                    nuevas_cols.append(str(c).strip().replace('\xa0', ''))
+            df.columns = nuevas_cols
+            return df
+
+
+        df_forecast = estandarizar_columnas(df_forecast)
+        df_budget = estandarizar_columnas(df_budget)
+
+        # Estandarización de nomenclaturas (Corrección a "Trabajador")
         for df in [df_forecast, df_budget]:
             if 'Gerencia' in df.columns:
                 df['Gerencia'] = df['Gerencia'].astype(str).str.strip().replace(
                     {'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'})
 
         # =====================================================================
-        # SECCIÓN 2: PROCESAMIENTO ANALÍTICO Y UNIÓN DE BASES (OUTER JOIN)
+        # SECCIÓN 2: PROCESAMIENTO ANALÍTICO Y UNIÓN DE BASES
         # =====================================================================
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -49,7 +76,8 @@ if uploaded_file:
         meses_validos = [m for m in abrev_meses if m in meses_f_map and m in meses_b_map]
 
         if not meses_validos:
-            st.error("No se detectaron columnas de meses válidas en las hojas seleccionadas.")
+            st.error(
+                "No se detectaron columnas de meses válidas en las hojas seleccionadas. Verifica el formato en el Excel.")
         else:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
@@ -90,7 +118,7 @@ if uploaded_file:
                 df_merged[columnas_numericas] = df_merged[columnas_numericas].fillna(0)
 
                 # =====================================================================
-                # SECCIÓN 3: FILTROS Y MOTOR DE FORECAST DINÁMICO (X+Y)
+                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO (X+Y)
                 # =====================================================================
                 st.sidebar.markdown("### ⚙️ Filtros Operacionales")
                 filtro_classif = st.sidebar.selectbox("Clasificación de Costo (Classif)",
@@ -104,45 +132,45 @@ if uploaded_file:
                     df_merged = df_merged[df_merged['Gerencia'] == filtro_gerencia]
 
                 st.sidebar.markdown("### 🧠 Motor Predictivo Dinámico (X+Y)")
-                meses_reales_n = st.sidebar.slider("Meses Reales Consilidados (Corte temporal)",
+                meses_reales_n = st.sidebar.slider("Meses Reales Consolidados (Corte temporal)",
                                                    min_value=1, max_value=len(meses_validos) - 1, value=5)
 
                 cuentas_fijas = ['Labor', 'Maintenance', 'Spare Parts', 'Expenses']
 
-                # FASE 1: Procesar ventana de meses reales (Fallback a Budget si hay ceros)
+                # Fase 1: Ventana real con Fallback a Budget
                 for i in range(meses_reales_n):
                     m = meses_validos[i]
                     col_f = meses_f_map[m]
                     col_b = f"{m}_Bud"
                     col_calc = f"{m}_Calc"
-
                     df_merged[col_calc] = np.where((df_merged[col_f] == 0) | (df_merged[col_f].isna()),
                                                    df_merged[col_b],
                                                    df_merged[col_f])
 
-                # FASE 2: Calcular el Factor de Ejecución usando SOLO la ventana real
+                # Fase 2: Factor de ejecución YTD
                 cols_reales_ytd = [f"{meses_validos[j]}_Calc" for j in range(meses_reales_n)]
                 cols_bud_ytd = [f"{meses_validos[j]}_Bud" for j in range(meses_reales_n)]
-
                 sum_real_ytd = df_merged[cols_reales_ytd].sum(axis=1)
                 sum_bud_ytd = df_merged[cols_bud_ytd].sum(axis=1)
-
                 factor_ejecucion = np.where(sum_bud_ytd > 0, sum_real_ytd / sum_bud_ytd, 1.0)
-                factor_ejecucion = np.clip(factor_ejecucion, 0.85, 1.15)  # Limita volatilidad extrema al +/- 15%
+                factor_ejecucion = np.clip(factor_ejecucion, 0.85, 1.15)
 
-                # FASE 3: Proyectar el futuro (Ignorando cualquier dato real cargado después del mes de corte)
+                # Fase 3: Proyección del Futuro
                 for i in range(meses_reales_n, len(meses_validos)):
                     m = meses_validos[i]
                     col_b = f"{m}_Bud"
                     col_calc = f"{m}_Calc"
-
-                    # Regla de negocio: Si es inelástica (fija) toma el Budget directo. Si no, lo multiplica por su factor.
                     condicion_fija = df_merged['Classif'].isin(cuentas_fijas)
                     df_merged[col_calc] = np.where(condicion_fija, df_merged[col_b],
                                                    df_merged[col_b] * factor_ejecucion)
 
+                # Calcular Varianza Total por Fila para Reportes
+                df_merged['Varianza_Total_Fila'] = 0.0
+                for m in meses_validos:
+                    df_merged['Varianza_Total_Fila'] += (df_merged[f"{m}_Calc"] - df_merged[f"{m}_Bud"])
+
                 # =====================================================================
-                # SECCIÓN 4: CÁLCULOS GLOBALES (FULL YEAR)
+                # SECCIÓN 4: CÁLCULOS GLOBALES
                 # =====================================================================
                 valores_forecast_full = [df_merged[f"{m}_Calc"].sum() for m in meses_validos]
                 valores_budget_full_list = [df_merged[f"{m}_Bud"].sum() for m in meses_validos]
@@ -156,14 +184,15 @@ if uploaded_file:
                 varianza_total_m = sum_forecast_m - sum_budget_m
                 varianzas_mensuales_full = [f - b for f, b in zip(valores_forecast_full, valores_budget_full_list)]
 
-                tab_anual, tab_temporal, tab_multi_presupuesto = st.tabs([
+                tab_anual, tab_temporal, tab_multi_presupuesto, tab_export = st.tabs([
                     f"📅 Análisis Consolidado (Forecast {meses_reales_n}+{len(meses_validos) - meses_reales_n})",
                     "⏳ Semáforo de Control YTD",
-                    "📈 Tendencias Plurianuales (Budgets)"
+                    "📈 Tendencias Plurianuales",
+                    "📥 Exportar Reportes"
                 ])
 
                 # =====================================================================
-                # SECCIÓN 5: INTERFAZ - PESTAÑA ANUAL (FULL YEAR)
+                # SECCIÓN 5: INTERFAZ - PESTAÑA ANUAL
                 # =====================================================================
                 with tab_anual:
                     st.markdown(f"### 🎯 Desempeño Financiero Anual Consolidado")
@@ -173,10 +202,7 @@ if uploaded_file:
                     col3.metric("Varianza Total Anual", f"$ {varianza_total_m:,.2f} M",
                                 delta=f"$ {varianza_total_m:,.2f} M",
                                 delta_color="inverse" if varianza_total_m >= 0 else "normal")
-
                     st.divider()
-
-                    st.subheader("📊 Gráfico Comparativo de Ejecución y Proyección")
                     fig_comb = go.Figure()
                     fig_comb.add_trace(
                         go.Bar(x=meses_validos, y=valores_budget_full_list, name="Budget", marker_color="#1f77b4",
@@ -187,36 +213,27 @@ if uploaded_file:
                     fig_comb.add_trace(
                         go.Scatter(x=meses_validos, y=varianzas_mensuales_full, name="Varianza", mode="lines+markers",
                                    line=dict(color="#d62728", width=3), yaxis="y2"))
-
-                    fig_comb.update_layout(
-                        barmode="group", hovermode="x unified",
-                        title="Distribución de Volúmenes y Variación del Periodo",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        yaxis=dict(title="Montos Absolutos ($)", showgrid=True),
-                        yaxis2=dict(title="Varianza Neta ($)", overlaying="y", side="right", showgrid=False),
-                        height=500
-                    )
-                    # Añadir línea de corte X+Y
+                    fig_comb.update_layout(barmode="group", hovermode="x unified",
+                                           title="Distribución de Volúmenes y Variación del Periodo",
+                                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                           yaxis=dict(title="Montos Absolutos ($)", showgrid=True),
+                                           yaxis2=dict(title="Varianza Neta ($)", overlaying="y", side="right",
+                                                       showgrid=False), height=500)
                     fig_comb.add_vline(x=meses_reales_n - 0.5, line_width=2, line_dash="dash", line_color="gray",
                                        annotation_text="Corte Proyección")
                     st.plotly_chart(fig_comb, use_container_width=True)
 
                 # =====================================================================
-                # SECCIÓN 6: INTERFAZ - PESTAÑA TEMPORAL Y SEMÁFORO (YTD)
+                # SECCIÓN 6: INTERFAZ - SEMÁFORO
                 # =====================================================================
                 with tab_temporal:
-                    st.markdown("### ⏳ Simulación Temporal Acumulada (YTD Dinámico)")
-
                     mes_corte = st.selectbox("Seleccionar mes de corte (Gasto acumulado hasta hoy):", meses_validos,
                                              index=meses_reales_n - 1)
-
                     idx_corte = meses_validos.index(mes_corte)
                     meses_hasta_hoy = meses_validos[:idx_corte + 1]
-
                     valores_forecast_hoy = [df_merged[f"{m}_Calc"].sum() for m in meses_hasta_hoy]
                     valores_budget_hoy = [df_merged[f"{m}_Bud"].sum() for m in meses_hasta_hoy]
                     varianzas_mensuales_hoy = [f - b for f, b in zip(valores_forecast_hoy, valores_budget_hoy)]
-
                     sum_forecast_hoy_m = sum(valores_forecast_hoy) / 1_000_000
                     sum_budget_hoy_m = sum(valores_budget_hoy) / 1_000_000
                     varianza_hoy_m = sum_forecast_hoy_m - sum_budget_hoy_m
@@ -230,8 +247,6 @@ if uploaded_file:
                                     delta_color="inverse" if varianza_hoy_m >= 0 else "normal")
 
                     st.divider()
-
-                    # SEMÁFORO DE GESTIÓN
                     st.markdown("#### 🚦 Semáforo de Control Presupuestario (YTD)")
                     if pct_varianza_ytd <= 0:
                         st.success(
@@ -241,106 +256,138 @@ if uploaded_file:
                             f"🟡 **PRECAUCIÓN:** Desviación leve ({pct_varianza_ytd:+.1f}%). El gasto se encuentra dentro del margen de tolerancia operativo.")
                     else:
                         st.error(
-                            f"🔴 **ALERTA CRÍTICA:** Sobregasto detectado ({pct_varianza_ytd:+.1f}%). Requiere plan de acción inmediato y revisión de partidas variables.")
-
+                            f"🔴 **ALERTA CRÍTICA:** Sobregasto detectado ({pct_varianza_ytd:+.1f}%). Requiere plan de acción inmediato.")
                     st.divider()
-
-                    st.subheader(f"📊 Impacto Acumulado de Variaciones (Ene a {mes_corte})")
-
-                    fig_water_hoy = go.Figure(go.Waterfall(
-                        name="Variación Acumulada", orientation="v", x=meses_hasta_hoy, textposition="outside",
-                        text=[f"${v / 1_000_000:.2f}M" for v in varianzas_mensuales_hoy], y=varianzas_mensuales_hoy,
-                        connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5)),
-                        decreasing=dict(marker=dict(color="#2ca02c")),
-                        increasing=dict(marker=dict(color="#d62728"))
-                    ))
-
-                    fig_water_hoy.update_layout(
-                        title=f"Gráfico de Cascada Acumulado ({mes_corte})",
-                        showlegend=False,
-                        height=550,
-                        margin=dict(t=50, b=50)
-                    )
+                    fig_water_hoy = go.Figure(
+                        go.Waterfall(name="Variación Acumulada", orientation="v", x=meses_hasta_hoy,
+                                     textposition="outside",
+                                     text=[f"${v / 1_000_000:.2f}M" for v in varianzas_mensuales_hoy],
+                                     y=varianzas_mensuales_hoy,
+                                     connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5)),
+                                     decreasing=dict(marker=dict(color="#2ca02c")),
+                                     increasing=dict(marker=dict(color="#d62728"))))
+                    fig_water_hoy.update_layout(title=f"Gráfico de Cascada Acumulado ({mes_corte})", showlegend=False,
+                                                height=550)
                     st.plotly_chart(fig_water_hoy, use_container_width=True)
 
                 # =====================================================================
-                # SECCIÓN 7: INTERFAZ - PESTAÑA MULTI-PRESUPUESTO
+                # SECCIÓN 7: INTERFAZ - MULTI-PRESUPUESTO
                 # =====================================================================
                 with tab_multi_presupuesto:
                     st.markdown("### 📈 Análisis de Evolución Presupuestaria Horizonte Plurianual")
-
                     valores_multi_fy = [df_merged[c].sum() / 1_000_000 for c in cols_fy_todas]
-
-                    fig_trend_fy = go.Figure()
-                    fig_trend_fy.add_trace(go.Scatter(
-                        x=cols_fy_todas, y=valores_multi_fy,
-                        mode="lines+markers+text",
-                        text=[f"${v:,.2f}M" for v in valores_multi_fy],
-                        textposition="top center",
-                        line=dict(color="#9467bd", width=4),
-                        marker=dict(size=10, symbol="diamond")
-                    ))
-                    fig_trend_fy.update_layout(
-                        title="Tendencia de Presupuestos Consolidados por Año de Ejercicio",
-                        xaxis_title="Periodos Presupuestarios",
-                        yaxis_title="Monto Total Asignado (M$)",
-                        height=400
-                    )
+                    fig_trend_fy = go.Figure(go.Scatter(x=cols_fy_todas, y=valores_multi_fy, mode="lines+markers+text",
+                                                        text=[f"${v:,.2f}M" for v in valores_multi_fy],
+                                                        textposition="top center", line=dict(color="#9467bd", width=4),
+                                                        marker=dict(size=10, symbol="diamond")))
+                    fig_trend_fy.update_layout(title="Tendencia de Presupuestos Consolidados por Año de Ejercicio",
+                                               xaxis_title="Periodos", yaxis_title="Monto (M$)", height=400)
                     st.plotly_chart(fig_trend_fy, use_container_width=True)
 
-                    st.divider()
-                    st.subheader("🌊 Variación Detallada entre Presupuestos (Puente Interanual)")
+                # =====================================================================
+                # SECCIÓN 8: EXPORTAR REPORTES (WORD / EXCEL)
+                # =====================================================================
+                with tab_export:
+                    st.markdown("### 📥 Generación de Reportes Ejecutivos")
+                    st.markdown(
+                        "Descarga el detalle matemático en Excel o el informe consolidado con hallazgos estratégicos en Word.")
 
-                    if len(cols_fy_todas) >= 2:
-                        col_sel1, col_sel2 = st.columns(2)
-                        fy_base = col_sel1.selectbox("Seleccione Presupuesto Base (Año Inicial):", cols_fy_todas,
-                                                     index=0)
-                        fy_target = col_sel2.selectbox("Seleccione Presupuesto Destino (Año Final):", cols_fy_todas,
-                                                       index=1)
+                    # 1. GENERADOR EXCEL
+                    output_excel = BytesIO()
+                    with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
+                        columnas_export = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if
+                                           c in df_merged.columns]
+                        columnas_export += [f"{m}_Calc" for m in meses_validos] + [f"{m}_Bud" for m in
+                                                                                   meses_validos] + [
+                                               'Varianza_Total_Fila']
+                        df_excel = df_merged[columnas_export].sort_values(by='Varianza_Total_Fila', ascending=False)
+                        df_excel.to_excel(writer, sheet_name="Forecast_Detalle", index=False)
 
-                        total_base = df_merged[fy_base].sum() / 1_000_000
-                        total_target = df_merged[fy_target].sum() / 1_000_000
 
-                        df_puente = df_merged.groupby('Classif')[[fy_base, fy_target]].sum().reset_index()
-                        df_puente['Delta'] = (df_puente[fy_target] - df_puente[fy_base]) / 1_000_000
-                        df_puente = df_puente.sort_values(by='Delta', ascending=False)
+                    # 2. GENERADOR WORD
+                    def generar_word():
+                        doc = Document()
+                        titulo = doc.add_heading(
+                            f'REPORTE EJECUTIVO DE FORECAST OPERATIVO ({meses_reales_n}+{len(meses_validos) - meses_reales_n})',
+                            0)
+                        titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        doc.add_paragraph(
+                            f"Generado el: {datetime.now().strftime('%d/%m/%Y')}").alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-                        categorias_puente = df_puente['Classif'].tolist()
-                        deltas_puente = df_puente['Delta'].tolist()
+                        doc.add_heading('1. Resumen Financiero Global', level=1)
+                        doc.add_paragraph(f"El presupuesto oficial proyectado es de $ {sum_budget_m:,.2f} Millones.")
+                        doc.add_paragraph(
+                            f"El modelo predictivo Forecast {meses_reales_n}+{len(meses_validos) - meses_reales_n} estima un cierre anual de $ {sum_forecast_m:,.2f} Millones.")
 
-                        x_water = [fy_base] + categorias_puente + [fy_target]
-                        y_water = [total_base] + deltas_puente + [0]
-                        measure_water = ["absolute"] + ["relative"] * len(categorias_puente) + ["total"]
-                        text_water = [f"${total_base:,.2f}M"] + [f"${d:,.2f}M" if d < 0 else f"+${d:,.2f}M" for d in
-                                                                 deltas_puente] + [f"${total_target:,.2f}M"]
+                        estado = "Ahorro/Sub-ejecución" if varianza_total_m <= 0 else "Sobregasto"
+                        doc.add_paragraph(
+                            f"Esto representa una desviación neta de $ {varianza_total_m:,.2f} Millones ({estado}).")
 
-                        fig_bridge = go.Figure(go.Waterfall(
-                            name="Puente Presupuestario", orientation="v", measure=measure_water, x=x_water,
-                            textposition="outside", text=text_water, y=y_water,
-                            connector=dict(line=dict(color="rgb(63, 63, 63)", width=1.5, dash="dot")),
-                            decreasing=dict(marker=dict(color="#2ca02c")),
-                            increasing=dict(marker=dict(color="#d62728")),
-                            totals=dict(marker=dict(color="#1f77b4"))
-                        ))
+                        doc.add_heading('2. Estado de Alerta (Semáforo YTD)', level=1)
+                        if pct_varianza_ytd <= 0:
+                            doc.add_paragraph(
+                                f"ESTADO VERDE (Óptimo): El gasto acumulado presenta una eficiencia del {abs(pct_varianza_ytd):.2f}%.")
+                        elif 0 < pct_varianza_ytd <= 5:
+                            doc.add_paragraph(
+                                f"ESTADO AMARILLO (Precaución): Desviación del {pct_varianza_ytd:.2f}%, dentro de las bandas de flotación aceptadas.")
+                        else:
+                            doc.add_paragraph(
+                                f"ESTADO ROJO (Alerta): Sobregasto crítico del {pct_varianza_ytd:.2f}%. Se exige mitigación inmediata.")
 
-                        fig_bridge.update_layout(
-                            title=f"Explicación de Variaciones por Categoría: {fy_base} → {fy_target}",
-                            showlegend=False, height=550, margin=dict(t=50, b=50), yaxis=dict(title="Monto (M$)")
+                        doc.add_heading('3. Hallazgos Estratégicos y Lógicas Aplicadas', level=1)
+                        doc.add_paragraph("Regla 1 - Protección de Cuentas Inelásticas:", style='List Bullet')
+                        doc.add_paragraph(
+                            "Las cuentas fijas (Labor, Maintenance, Spare Parts) fueron bloqueadas a nivel de presupuesto oficial para los meses proyectados, previniendo falsas volatilidades en sueldos y contratos a suma alzada.")
+                        doc.add_paragraph("Regla 2 - Proyección Variable (Run-Rate Controlado):", style='List Bullet')
+                        doc.add_paragraph(
+                            "Las cuentas como Fuel y Power fueron proyectadas respetando su tendencia de consumo real (YTD), pero aplicando un techo analítico de +/- 15% para evitar distorsiones por eventos únicos.")
+                        doc.add_paragraph("Regla 3 - Cero Compensación Cruzada:", style='List Bullet')
+                        doc.add_paragraph(
+                            "El factor de desviación se calculó independientemente por cada centro de costo y clasificación, asegurando que un ahorro en contratistas no financie un sobregasto en energía de forma invisible.")
+
+                        df_agrupado = df_merged.groupby('Classif')['Varianza_Total_Fila'].sum().sort_values()
+                        mayor_ahorro = df_agrupado.index[0] if df_agrupado.iloc[0] < 0 else "Ninguno"
+                        mayor_gasto = df_agrupado.index[-1] if df_agrupado.iloc[-1] > 0 else "Ninguno"
+
+                        doc.add_heading('4. Focos de Atención Directa', level=1)
+                        doc.add_paragraph(
+                            f"Mayor foco de sobregasto actual: La cuenta '{mayor_gasto}' lidera las varianzas negativas del periodo.")
+                        doc.add_paragraph(
+                            f"Principal generador de ahorro: La cuenta '{mayor_ahorro}' está absorbiendo los impactos operacionales permitiendo eficiencias netas.")
+
+                        output_word = BytesIO()
+                        doc.save(output_word)
+                        output_word.seek(0)
+                        return output_word
+
+
+                    col_exp1, col_exp2 = st.columns(2)
+                    with col_exp1:
+                        st.download_button(
+                            label="📊 Descargar Sábana Analítica (Excel)",
+                            data=output_excel.getvalue(),
+                            file_name=f"Forecast_{meses_reales_n}plus{len(meses_validos) - meses_reales_n}_Detalle.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
                         )
-                        st.plotly_chart(fig_bridge, use_container_width=True)
+                    with col_exp2:
+                        try:
+                            word_file = generar_word()
+                            st.download_button(
+                                label="📄 Descargar Informe y Hallazgos (Word)",
+                                data=word_file,
+                                file_name=f"Reporte_Forecast_{meses_reales_n}plus{len(meses_validos) - meses_reales_n}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"Error generando Word: {e}")
 
-                # =====================================================================
-                # SECCIÓN 8: MATRIZ DE DATOS (TABLA DETALLADA)
-                # =====================================================================
+                # MATRIZ INFERIOR
                 st.subheader("📋 Matriz Detallada por Centro de Costo")
-                df_tabla = df_merged.copy()
-                df_tabla['Varianza Total'] = 0.0
-                for m in meses_validos:
-                    df_tabla['Varianza Total'] += (df_tabla[f"{m}_Calc"] - df_tabla[f"{m}_Bud"])
-
-                columnas_visibles = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if c in df_tabla.columns] + [
-                    'Varianza Total']
-                st.dataframe(df_tabla[columnas_visibles].sort_values(by='Varianza Total', ascending=False),
+                columnas_visibles = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if
+                                     c in df_merged.columns] + ['Varianza_Total_Fila']
+                st.dataframe(df_merged[columnas_visibles].sort_values(by='Varianza_Total_Fila', ascending=False),
                              use_container_width=True)
 
             else:
