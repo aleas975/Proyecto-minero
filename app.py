@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from io import BytesIO
 from datetime import datetime
+import re
 
 # Asegurar importaciones para exportación a Word
 try:
@@ -11,7 +12,7 @@ try:
     from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 except ImportError:
-    st.error("Falta instalar python-docx. Ejecuta: pip install python-docx")
+    st.error("Falta instalar python-docx. Ejecuta en tu terminal: pip install python-docx")
 
 st.set_page_config(page_title="Control de Gestión: Forecast vs Budget", layout="wide")
 
@@ -39,26 +40,60 @@ if uploaded_file:
         df_budget = pd.read_excel(uploaded_file, sheet_name=hoja_b)
 
 
-        # 🛡️ NUEVO: FUNCIÓN ESCUDO CONTRA FECHAS OCULTAS Y ESPACIOS EN EXCEL
+        # 🛡️ INTERCEPTOR ULTRA-ROBUSTO DE FECHAS Y FORMATOS DE EXCEL
         def estandarizar_columnas(df):
-            meses_map = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
-                         7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'}
+            dict_meses_es_en = {
+                'jan': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'apr': 'Apr', 'may': 'May', 'jun': 'Jun',
+                'jul': 'Jul', 'aug': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dec': 'Dec',
+                'ene': 'Jan', 'abr': 'Apr', 'ago': 'Aug', 'dic': 'Dec'
+            }
+            abrev_en = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
             nuevas_cols = []
+
             for c in df.columns:
-                # Si Pandas lo leyó como una fecha (Ej: 2026-01-01 00:00:00)
+                # Caso 1: Es un objeto fecha nativo de Pandas/Python
                 if isinstance(c, (pd.Timestamp, datetime)):
-                    nuevas_cols.append(f"{meses_map[c.month]}-{str(c.year)[-2:]}")
-                else:
-                    # Si lo leyó como texto, eliminamos espacios y caracteres fantasmas
-                    nuevas_cols.append(str(c).strip().replace('\xa0', ''))
+                    mes_en = abrev_en[c.month - 1]
+                    nuevas_cols.append(f"{mes_en}-{str(c.year)[-2:]}")
+                    continue
+
+                # Limpieza inicial de texto y espacios fantasmas
+                str_c = str(c).strip().replace('\xa0', '')
+
+                # Caso 2: Es un string con formato fecha oculto (ej: "2026-01-01")
+                try:
+                    dt = pd.to_datetime(str_c, errors='coerce')
+                    if not pd.isna(dt) and (2000 < dt.year < 2100):
+                        mes_en = abrev_en[dt.month - 1]
+                        nuevas_cols.append(f"{mes_en}-{str(dt.year)[-2:]}")
+                        continue
+                except:
+                    pass
+
+                # Caso 3: Es un string tipo "Jan-26" o "Ene-26" con o sin espacios
+                encontrado = False
+                str_c_lower = str_c.lower()
+                for k, v in dict_meses_es_en.items():
+                    if k in str_c_lower:
+                        num_anios = re.findall(r'\d+', str_c)
+                        if num_anios:
+                            anio_2d = num_anios[-1][-2:]  # Toma los últimos 2 dígitos del año
+                            nuevas_cols.append(f"{v}-{anio_2d}")
+                            encontrado = True
+                            break
+
+                if not encontrado:
+                    nuevas_cols.append(str_c)
+
             df.columns = nuevas_cols
             return df
 
 
+        # Aplicamos el escudo extractor a ambos DataFrames
         df_forecast = estandarizar_columnas(df_forecast)
         df_budget = estandarizar_columnas(df_budget)
 
-        # Estandarización de nomenclaturas (Corrección a "Trabajador")
+        # Estandarización de nomenclaturas de portales (Gerencia -> Trabajador)
         for df in [df_forecast, df_budget]:
             if 'Gerencia' in df.columns:
                 df['Gerencia'] = df['Gerencia'].astype(str).str.strip().replace(
@@ -69,15 +104,16 @@ if uploaded_file:
         # =====================================================================
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-        meses_f_map = {m: [c for c in df_forecast.columns if c.startswith(m)][0] for m in abrev_meses if
-                       [c for c in df_forecast.columns if c.startswith(m)]}
-        meses_b_map = {m: [c for c in df_budget.columns if c.startswith(m)][0] for m in abrev_meses if
-                       [c for c in df_budget.columns if c.startswith(m)]}
+        # Búsqueda segura usando el prefijo estandarizado exacto "Mes-" (ej: "Jan-")
+        meses_f_map = {m: [c for c in df_forecast.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
+                       [c for c in df_forecast.columns if c.startswith(f"{m}-")]}
+        meses_b_map = {m: [c for c in df_budget.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
+                       [c for c in df_budget.columns if c.startswith(f"{m}-")]}
         meses_validos = [m for m in abrev_meses if m in meses_f_map and m in meses_b_map]
 
         if not meses_validos:
             st.error(
-                "No se detectaron columnas de meses válidas en las hojas seleccionadas. Verifica el formato en el Excel.")
+                "🚨 Error Crítico: No se detectaron las columnas de los meses en tu Excel. Asegúrate de que las hojas contengan los encabezados de los meses (ej: Jan-26, Feb-26).")
         else:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
@@ -118,7 +154,7 @@ if uploaded_file:
                 df_merged[columnas_numericas] = df_merged[columnas_numericas].fillna(0)
 
                 # =====================================================================
-                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO (X+Y)
+                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO NO LINEAL (X+Y)
                 # =====================================================================
                 st.sidebar.markdown("### ⚙️ Filtros Operacionales")
                 filtro_classif = st.sidebar.selectbox("Clasificación de Costo (Classif)",
@@ -137,7 +173,7 @@ if uploaded_file:
 
                 cuentas_fijas = ['Labor', 'Maintenance', 'Spare Parts', 'Expenses']
 
-                # Fase 1: Ventana real con Fallback a Budget
+                # Fase 1: Ventana real con Fallback inteligente a Budget ante ceros
                 for i in range(meses_reales_n):
                     m = meses_validos[i]
                     col_f = meses_f_map[m]
@@ -147,7 +183,7 @@ if uploaded_file:
                                                    df_merged[col_b],
                                                    df_merged[col_f])
 
-                # Fase 2: Factor de ejecución YTD
+                # Fase 2: Factor de ejecución YTD por fila independiente (Evita compensación cruzada)
                 cols_reales_ytd = [f"{meses_validos[j]}_Calc" for j in range(meses_reales_n)]
                 cols_bud_ytd = [f"{meses_validos[j]}_Bud" for j in range(meses_reales_n)]
                 sum_real_ytd = df_merged[cols_reales_ytd].sum(axis=1)
@@ -155,7 +191,7 @@ if uploaded_file:
                 factor_ejecucion = np.where(sum_bud_ytd > 0, sum_real_ytd / sum_bud_ytd, 1.0)
                 factor_ejecucion = np.clip(factor_ejecucion, 0.85, 1.15)
 
-                # Fase 3: Proyección del Futuro
+                # Fase 3: Proyección del Futuro (No lineal, respeta estacionalidad del presupuesto)
                 for i in range(meses_reales_n, len(meses_validos)):
                     m = meses_validos[i]
                     col_b = f"{m}_Bud"
@@ -192,7 +228,7 @@ if uploaded_file:
                 ])
 
                 # =====================================================================
-                # SECCIÓN 5: INTERFAZ - PESTAÑA ANUAL
+                # SECCIÓN 5: INTERFAZ - PESTAÑA ANUAL (FULL YEAR)
                 # =====================================================================
                 with tab_anual:
                     st.markdown(f"### 🎯 Desempeño Financiero Anual Consolidado")
@@ -224,7 +260,7 @@ if uploaded_file:
                     st.plotly_chart(fig_comb, use_container_width=True)
 
                 # =====================================================================
-                # SECCIÓN 6: INTERFAZ - SEMÁFORO
+                # SECCIÓN 6: INTERFAZ - SEMÁFORO DE GESTIÓN (YTD)
                 # =====================================================================
                 with tab_temporal:
                     mes_corte = st.selectbox("Seleccionar mes de corte (Gasto acumulado hasta hoy):", meses_validos,
@@ -271,7 +307,7 @@ if uploaded_file:
                     st.plotly_chart(fig_water_hoy, use_container_width=True)
 
                 # =====================================================================
-                # SECCIÓN 7: INTERFAZ - MULTI-PRESUPUESTO
+                # SECCIÓN 7: INTERFAZ - MULTI-PRESUPUESTO HORIZONTE PLURIANUAL
                 # =====================================================================
                 with tab_multi_presupuesto:
                     st.markdown("### 📈 Análisis de Evolución Presupuestaria Horizonte Plurianual")
@@ -285,14 +321,14 @@ if uploaded_file:
                     st.plotly_chart(fig_trend_fy, use_container_width=True)
 
                 # =====================================================================
-                # SECCIÓN 8: EXPORTAR REPORTES (WORD / EXCEL)
+                # SECCIÓN 8: EXPORTAR REPORTES AUTOMATIZADOS (WORD Y EXCEL)
                 # =====================================================================
                 with tab_export:
                     st.markdown("### 📥 Generación de Reportes Ejecutivos")
                     st.markdown(
                         "Descarga el detalle matemático en Excel o el informe consolidado con hallazgos estratégicos en Word.")
 
-                    # 1. GENERADOR EXCEL
+                    # 1. GENERADOR EXCEL SÁBANA ANALÍTICA
                     output_excel = BytesIO()
                     with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
                         columnas_export = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if
@@ -304,7 +340,7 @@ if uploaded_file:
                         df_excel.to_excel(writer, sheet_name="Forecast_Detalle", index=False)
 
 
-                    # 2. GENERADOR WORD
+                    # 2. GENERADOR WORD CON REDACCIÓN DINÁMICA DE HALLAZGOS
                     def generar_word():
                         doc = Document()
                         titulo = doc.add_heading(
@@ -383,7 +419,7 @@ if uploaded_file:
                         except Exception as e:
                             st.error(f"Error generando Word: {e}")
 
-                # MATRIZ INFERIOR
+                # MATRIZ INFERIOR DETALLADA
                 st.subheader("📋 Matriz Detallada por Centro de Costo")
                 columnas_visibles = [c for c in ['CC', 'Classif', 'Gerencia', 'Desc Item'] if
                                      c in df_merged.columns] + ['Varianza_Total_Fila']
