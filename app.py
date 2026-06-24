@@ -40,7 +40,7 @@ if uploaded_file:
         df_budget = pd.read_excel(uploaded_file, sheet_name=hoja_b)
 
 
-        # 🛡️ INTERCEPTOR ULTRA-ROBUSTO DE FECHAS Y FORMATOS DE EXCEL
+        # 🛡️ INTERCEPTOR ULTRA-ROBUSTO CON EXPRESIONES REGULARES
         def estandarizar_columnas(df):
             dict_meses_es_en = {
                 'jan': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'apr': 'Apr', 'may': 'May', 'jun': 'Jun',
@@ -51,45 +51,30 @@ if uploaded_file:
             nuevas_cols = []
 
             for c in df.columns:
-                # Caso 1: Es un objeto fecha nativo de Pandas/Python
+                # 1. Si es fecha nativa de sistema
                 if isinstance(c, (pd.Timestamp, datetime)):
                     mes_en = abrev_en[c.month - 1]
                     nuevas_cols.append(f"{mes_en}-{str(c.year)[-2:]}")
                     continue
 
-                # Limpieza inicial de texto y espacios fantasmas
-                str_c = str(c).strip().replace('\xa0', '')
+                c_str = str(c).strip().replace('\xa0', '')
 
-                # Caso 2: Es un string con formato fecha oculto (ej: "2026-01-01")
-                try:
-                    dt = pd.to_datetime(str_c, errors='coerce')
-                    if not pd.isna(dt) and (2000 < dt.year < 2100):
-                        mes_en = abrev_en[dt.month - 1]
-                        nuevas_cols.append(f"{mes_en}-{str(dt.year)[-2:]}")
-                        continue
-                except:
-                    pass
+                # 2. Búsqueda implacable del patrón (Ignora espacios y caracteres extraños)
+                match = re.search(
+                    r'(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|ene|abr|ago|dic)[^\d]*(\d{2,4})', c_str)
 
-                # Caso 3: Es un string tipo "Jan-26" o "Ene-26" con o sin espacios
-                encontrado = False
-                str_c_lower = str_c.lower()
-                for k, v in dict_meses_es_en.items():
-                    if k in str_c_lower:
-                        num_anios = re.findall(r'\d+', str_c)
-                        if num_anios:
-                            anio_2d = num_anios[-1][-2:]  # Toma los últimos 2 dígitos del año
-                            nuevas_cols.append(f"{v}-{anio_2d}")
-                            encontrado = True
-                            break
-
-                if not encontrado:
-                    nuevas_cols.append(str_c)
+                if match:
+                    mes_encontrado = match.group(1).lower()
+                    anio_encontrado = match.group(2)[-2:]  # Toma siempre los últimos 2 dígitos
+                    nuevas_cols.append(f"{dict_meses_es_en[mes_encontrado]}-{anio_encontrado}")
+                else:
+                    nuevas_cols.append(c_str)
 
             df.columns = nuevas_cols
             return df
 
 
-        # Aplicamos el escudo extractor a ambos DataFrames
+        # Aplicamos el extractor de fechas a ambos DataFrames
         df_forecast = estandarizar_columnas(df_forecast)
         df_budget = estandarizar_columnas(df_budget)
 
@@ -104,7 +89,7 @@ if uploaded_file:
         # =====================================================================
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-        # Búsqueda segura usando el prefijo estandarizado exacto "Mes-" (ej: "Jan-")
+        # Búsqueda segura usando el formato extraído "Mes-Año"
         meses_f_map = {m: [c for c in df_forecast.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
                        [c for c in df_forecast.columns if c.startswith(f"{m}-")]}
         meses_b_map = {m: [c for c in df_budget.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
@@ -112,8 +97,8 @@ if uploaded_file:
         meses_validos = [m for m in abrev_meses if m in meses_f_map and m in meses_b_map]
 
         if not meses_validos:
-            st.error(
-                "🚨 Error Crítico: No se detectaron las columnas de los meses en tu Excel. Asegúrate de que las hojas contengan los encabezados de los meses (ej: Jan-26, Feb-26).")
+            st.error("🚨 Error Crítico: Aún no se detectan los meses. Revisa que el Excel no esté corrupto.")
+            st.stop()
         else:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
@@ -154,7 +139,7 @@ if uploaded_file:
                 df_merged[columnas_numericas] = df_merged[columnas_numericas].fillna(0)
 
                 # =====================================================================
-                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO NO LINEAL (X+Y)
+                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO (X+Y)
                 # =====================================================================
                 st.sidebar.markdown("### ⚙️ Filtros Operacionales")
                 filtro_classif = st.sidebar.selectbox("Clasificación de Costo (Classif)",
@@ -183,7 +168,7 @@ if uploaded_file:
                                                    df_merged[col_b],
                                                    df_merged[col_f])
 
-                # Fase 2: Factor de ejecución YTD por fila independiente (Evita compensación cruzada)
+                # Fase 2: Factor de ejecución YTD por fila independiente
                 cols_reales_ytd = [f"{meses_validos[j]}_Calc" for j in range(meses_reales_n)]
                 cols_bud_ytd = [f"{meses_validos[j]}_Bud" for j in range(meses_reales_n)]
                 sum_real_ytd = df_merged[cols_reales_ytd].sum(axis=1)
@@ -191,7 +176,7 @@ if uploaded_file:
                 factor_ejecucion = np.where(sum_bud_ytd > 0, sum_real_ytd / sum_bud_ytd, 1.0)
                 factor_ejecucion = np.clip(factor_ejecucion, 0.85, 1.15)
 
-                # Fase 3: Proyección del Futuro (No lineal, respeta estacionalidad del presupuesto)
+                # Fase 3: Proyección del Futuro
                 for i in range(meses_reales_n, len(meses_validos)):
                     m = meses_validos[i]
                     col_b = f"{m}_Bud"
