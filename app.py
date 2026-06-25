@@ -4,7 +4,6 @@ import numpy as np
 import plotly.graph_objects as go
 from io import BytesIO
 from datetime import datetime
-import re
 
 # Asegurar importaciones para exportación a Word
 try:
@@ -39,44 +38,9 @@ if uploaded_file:
         df_forecast = pd.read_excel(uploaded_file, sheet_name=hoja_f)
         df_budget = pd.read_excel(uploaded_file, sheet_name=hoja_b)
 
-
-        # 🛡️ INTERCEPTOR ULTRA-ROBUSTO CON EXPRESIONES REGULARES
-        def estandarizar_columnas(df):
-            dict_meses_es_en = {
-                'jan': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'apr': 'Apr', 'may': 'May', 'jun': 'Jun',
-                'jul': 'Jul', 'aug': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dec': 'Dec',
-                'ene': 'Jan', 'abr': 'Apr', 'ago': 'Aug', 'dic': 'Dec'
-            }
-            abrev_en = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-            nuevas_cols = []
-
-            for c in df.columns:
-                # 1. Si es fecha nativa de sistema
-                if isinstance(c, (pd.Timestamp, datetime)):
-                    mes_en = abrev_en[c.month - 1]
-                    nuevas_cols.append(f"{mes_en}-{str(c.year)[-2:]}")
-                    continue
-
-                c_str = str(c).strip().replace('\xa0', '')
-
-                # 2. Búsqueda implacable del patrón (Ignora espacios y caracteres extraños)
-                match = re.search(
-                    r'(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|ene|abr|ago|dic)[^\d]*(\d{2,4})', c_str)
-
-                if match:
-                    mes_encontrado = match.group(1).lower()
-                    anio_encontrado = match.group(2)[-2:]  # Toma siempre los últimos 2 dígitos
-                    nuevas_cols.append(f"{dict_meses_es_en[mes_encontrado]}-{anio_encontrado}")
-                else:
-                    nuevas_cols.append(c_str)
-
-            df.columns = nuevas_cols
-            return df
-
-
-        # Aplicamos el extractor de fechas a ambos DataFrames
-        df_forecast = estandarizar_columnas(df_forecast)
-        df_budget = estandarizar_columnas(df_budget)
+        # Limpieza básica inicial de espacios externos en los encabezados
+        df_forecast.columns = [str(c).strip() for c in df_forecast.columns]
+        df_budget.columns = [str(c).strip() for c in df_budget.columns]
 
         # Estandarización de nomenclaturas de portales (Gerencia -> Trabajador)
         for df in [df_forecast, df_budget]:
@@ -85,36 +49,48 @@ if uploaded_file:
                     {'Operaciones': 'Trabajador', 'OPERACIONES': 'TRABAJADOR'})
 
         # =====================================================================
-        # SECCIÓN 2: PROCESAMIENTO ANALÍTICO Y UNIÓN DE BASES
+        # SECCIÓN 2: MAPEO SIMPLIFICADO DE MESES (BÚSQUEDA POR CONTENIDO)
         # =====================================================================
         abrev_meses = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        dict_busqueda = {
+            'Jan': ['jan', 'ene'], 'Feb': ['feb'], 'Mar': ['mar'], 'Apr': ['apr', 'abr'],
+            'May': ['may'], 'Jun': ['jun'], 'Jul': ['jul'], 'Aug': ['aug', 'ago'],
+            'Sep': ['sep'], 'Oct': ['oct'], 'Nov': ['nov'], 'Dec': ['dec', 'dic']
+        }
 
-        # Búsqueda segura usando el formato extraído "Mes-Año"
-        meses_f_map = {m: [c for c in df_forecast.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
-                       [c for c in df_forecast.columns if c.startswith(f"{m}-")]}
-        meses_b_map = {m: [c for c in df_budget.columns if c.startswith(f"{m}-")][0] for m in abrev_meses if
-                       [c for c in df_budget.columns if c.startswith(f"{m}-")]}
+
+        def mapear_columnas_meses(df):
+            mapa_resultado = {}
+            # Columnas del maestro que contienen texto y deben ignorarse para no confundir "Dec" con "Desc"
+            excluir = ['desc', 'resp', 'vp', 'gerencia', 'proc', 'item', 'classif', 'cc', 'ytd', 'fy', 'forecast',
+                       'budget']
+
+            for mes_std, alias_lista in dict_busqueda.items():
+                for col in df.columns:
+                    col_lower = col.lower()
+                    if any(ex in col_lower for ex in excluir):
+                        continue
+                    if any(alias in col_lower for alias in alias_lista):
+                        mapa_resultado[mes_std] = col
+                        break
+            return mapa_resultado
+
+
+        meses_f_map = mapear_columnas_meses(df_forecast)
+        meses_b_map = mapear_columnas_meses(df_budget)
         meses_validos = [m for m in abrev_meses if m in meses_f_map and m in meses_b_map]
 
         if not meses_validos:
-            st.error("🚨 Error Crítico: Aún no se detectan los meses. Revisa que el Excel no esté corrupto.")
+            st.error(
+                "🚨 Error: No se encontraron las columnas de meses en el archivo. Asegúrate de seleccionar las pestañas correctas.")
             st.stop()
         else:
             columnas_meses_f = [meses_f_map[m] for m in meses_validos]
             columnas_meses_b = [meses_b_map[m] for m in meses_validos]
 
-            anio_detectado = "".join([char for char in columnas_meses_b[0] if char.isdigit()])
-            if len(anio_detectado) > 2:
-                anio_detectado = anio_detectado[-2:]
-
-            col_fy_budget = f"FY{anio_detectado}"
-            if col_fy_budget not in df_budget.columns:
-                col_fy_budget = f"FY20{anio_detectado}"
-                if col_fy_budget not in df_budget.columns:
-                    cols_fy_fallback = [c for c in df_budget.columns if c.startswith('FY')]
-                    col_fy_budget = cols_fy_fallback[0] if cols_fy_fallback else None
-
-            cols_fy_todas = sorted([c for c in df_budget.columns if c.startswith('FY')])
+            # Identificación dinámica de la columna de cierre anual Budget (FY26, FY27, etc.)
+            cols_fy_todas = sorted([c for c in df_budget.columns if str(c).startswith('FY')])
+            col_fy_budget = cols_fy_todas[0] if cols_fy_todas else None
 
             if 'CC' in df_forecast.columns and 'CC' in df_budget.columns:
                 llaves_cruce = ['CC']
@@ -139,7 +115,7 @@ if uploaded_file:
                 df_merged[columnas_numericas] = df_merged[columnas_numericas].fillna(0)
 
                 # =====================================================================
-                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO (X+Y)
+                # SECCIÓN 3: MOTOR PREDICTIVO DINÁMICO NO LINEAL (X+Y)
                 # =====================================================================
                 st.sidebar.markdown("### ⚙️ Filtros Operacionales")
                 filtro_classif = st.sidebar.selectbox("Clasificación de Costo (Classif)",
@@ -158,7 +134,7 @@ if uploaded_file:
 
                 cuentas_fijas = ['Labor', 'Maintenance', 'Spare Parts', 'Expenses']
 
-                # Fase 1: Ventana real con Fallback inteligente a Budget ante ceros
+                # Fase 1: Datos Reales Históricos + Fallback si el dato viene vacío/cero
                 for i in range(meses_reales_n):
                     m = meses_validos[i]
                     col_f = meses_f_map[m]
@@ -168,7 +144,7 @@ if uploaded_file:
                                                    df_merged[col_b],
                                                    df_merged[col_f])
 
-                # Fase 2: Factor de ejecución YTD por fila independiente
+                # Fase 2: Factor de ejecución YTD por fila (Sin compensaciones cruzadas)
                 cols_reales_ytd = [f"{meses_validos[j]}_Calc" for j in range(meses_reales_n)]
                 cols_bud_ytd = [f"{meses_validos[j]}_Bud" for j in range(meses_reales_n)]
                 sum_real_ytd = df_merged[cols_reales_ytd].sum(axis=1)
@@ -176,7 +152,7 @@ if uploaded_file:
                 factor_ejecucion = np.where(sum_bud_ytd > 0, sum_real_ytd / sum_bud_ytd, 1.0)
                 factor_ejecucion = np.clip(factor_ejecucion, 0.85, 1.15)
 
-                # Fase 3: Proyección del Futuro
+                # Fase 3: Proyección del Futuro (Sobreescribe datos futuros reales forzando el modelo X+Y)
                 for i in range(meses_reales_n, len(meses_validos)):
                     m = meses_validos[i]
                     col_b = f"{m}_Bud"
